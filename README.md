@@ -2,6 +2,8 @@
 
 A Python tool to visualize pathfinding algorithms on real-world maps with 3D effects and dynamic sound.
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1biT6CPLlaV5T4OAOV_jTJiNxSWpVN1e1?usp=sharing)
+
 ![Demo](output/demo_astar.gif)
 
 ## Features
