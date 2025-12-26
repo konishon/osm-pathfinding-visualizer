@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "path-finder-viz"
-version = "0.1.0"
+version = "2025.1.0"
 description = "Dijkstra Search & Path Visualization for viral-style algorithm animations"
 authors = ["nishon <nishon@naxa.com.np>"]
 license = "MIT"
