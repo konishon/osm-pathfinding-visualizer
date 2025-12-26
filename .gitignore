@@ -133,6 +133,7 @@ dmypy.json
 search_path_animation.mp4
 data/
 cache/
+cache_data/
 .vscode/
 .idea/
 .DS_Store
