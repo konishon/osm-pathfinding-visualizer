@@ -1,10 +1,13 @@
 [tool.poetry]
-name = "tiktok-pf"
+name = "path-finder-viz"
 version = "0.1.0"
-description = "Dijkstra Search & Path Visualization for TikTok-style algorithm animations"
+description = "Dijkstra Search & Path Visualization for viral-style algorithm animations"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
-packages = [{include = "src"}]
+packages = [{include = "path_viz", from = "src"}]
+
+[tool.poetry.scripts]
+path-viz = "path_viz.visualizer:main"
 
 [tool.poetry.dependencies]
 python = "^3.8"

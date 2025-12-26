@@ -1,12 +1,12 @@
 # Dijkstra Search & Path Visualization
 
-A Python visualization tool that animates the Dijkstra/BFS algorithm search process with an expanding blue web, followed by the shortest path highlighted in neon green. Perfect for TikTok-style algorithm visualizations!
+A Python visualization tool that animates the Dijkstra/BFS algorithm search process with an expanding blue web, followed by the shortest path highlighted in neon green. Perfect for viral-style algorithm visualizations!
 
 ## Features
 
 ✨ **Blue Expanding Web**: Visualizes the search exploration in real-time  
 ✨ **Neon Green Path**: Highlights the final shortest route  
-✨ **Glow Effects**: Multi-layered path rendering for that viral TikTok aesthetic  
+✨ **Glow Effects**: Multi-layered path rendering for that viral aesthetic  
 ✨ **Dark Mode**: Sleek dark background with neon colors  
 ✨ **MP4 Export**: Save animations directly as video files  
 ✨ **Real Map Data**: Uses OpenStreetMap via OSMnx for accurate street networks  
@@ -66,12 +66,12 @@ choco install ffmpeg
 ### Option 1: Interactive Visualization (Recommended for Testing)
 
 ```bash
-poetry run python search_path_visualization.py
+poetry run path-viz
 ```
 
 Or if you've activated the Poetry shell:
 ```bash
-python search_path_visualization.py
+path-viz
 ```
 
 This will:
@@ -83,30 +83,37 @@ This will:
 ### Option 2: Export to MP4 Video
 
 ```bash
-poetry run python search_path_with_export.py
+poetry run path-viz --mode export
 ```
 
 Or with shell activated:
 ```bash
-python search_path_with_export.py
+path-viz --mode export
 ```
 
 This will:
 1. Generate the same animation
-2. Export to `search_path_animation.mp4` (about 30 seconds)
+2. Export to `path_viz.mp4` (about 30 seconds)
 3. Show progress during export
 
 ## Configuration
 
-Edit the configuration section in either script to customize:
+You can configure the visualization using command line arguments:
+
+```bash
+path-viz --mode [view|export|preview] --dim [2d|3d] --algo [bfs|astar|dijkstra|greedy]
+```
+
+Or edit the `Config` class in `src/path_viz/visualizer.py` to customize:
 
 ```python
-# --- CONFIGURATION ---
-CITY_POINT = (41.0370, 28.9850)  # Change latitude/longitude
-DISTANCE = 2000                   # Search radius in meters
-SEARCH_COLOR = '#1e90ff'          # Change the blue color
-PATH_COLOR = '#adff2f'            # Change the green color
-BG_COLOR = '#0b0b0b'              # Background darkness
+@dataclass
+class Config:
+    start_coord: Tuple[float, float] = (27.7172, 85.3240)  # Kathmandu Center
+    end_coord: Tuple[float, float] = (27.6800, 85.3500)    # Kathmandu South-East
+    search_color: str = '#1e90ff'  # Neon Blue
+    path_color: str = '#adff2f'    # Neon Green
+    bg_color: str = '#0b0b0b'      # Near black
 ```
 
 ### Popular Cities (Lat, Lon)
@@ -131,9 +138,8 @@ BG_COLOR = '#0b0b0b'              # Background darkness
 
 ## Output Files
 
-- **`search_path_visualization.py`** - Main visualization script (interactive only)
-- **`search_path_with_export.py`** - Includes MP4 export functionality
-- **`search_path_animation.mp4`** - Generated video file (after running export version)
+- **`src/path_viz/visualizer.py`** - Main visualization script
+- **`path_viz.mp4`** - Generated video file (after running export mode)
 
 ## Performance Tips
 
@@ -183,10 +189,11 @@ MemoryError during execution
 
 ## Technical Details
 
-### Algorithm: Breadth-First Search (BFS)
-- Explores nodes in order of distance from start
-- More visually interesting than Dijkstra for this animation
-- Guarantees finding shortest path in unweighted graphs
+### Algorithm: Multiple Search Algorithms
+- **BFS**: Breadth-First Search (Unweighted) - Explores equally in all directions
+- **Dijkstra**: Weighted Shortest Path - Explores based on actual road distance
+- **A***: Weighted + Heuristic - Uses distance to target to guide search
+- **Greedy**: Heuristic Only - Moves directly towards target (not guaranteed shortest)
 
 ### Performance Optimization
 - Uses `LineCollection` instead of individual Line2D objects

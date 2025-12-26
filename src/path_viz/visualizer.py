@@ -7,6 +7,7 @@ import osmnx as ox
 import networkx as nx
 import wave
 import subprocess
+import heapq
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.collections import LineCollection
@@ -17,16 +18,19 @@ from typing import Tuple, List, Optional, Dict
 import pyproj
 from shapely.geometry import Point
 
-# Import local modules
 try:
-    from sound_effects import init_sound_system, create_search_sounds, create_path_found_sound, get_search_waveforms, get_path_found_waveform
+    from .sound_effects import init_sound_system, create_search_sounds, create_path_found_sound, get_search_waveforms, get_path_found_waveform
 except ImportError:
-    print("Warning: sound_effects module not found. Audio will be disabled.")
-    def init_sound_system(): return False
-    def create_search_sounds(*args, **kwargs): return []
-    def create_path_found_sound(): return None
-    def get_search_waveforms(*args, **kwargs): return []
-    def get_path_found_waveform(): return np.array([])
+    # Fallback for direct execution or if module not found
+    try:
+        from sound_effects import init_sound_system, create_search_sounds, create_path_found_sound, get_search_waveforms, get_path_found_waveform
+    except ImportError:
+        print("Warning: sound_effects module not found. Audio will be disabled.")
+        def init_sound_system(): return False
+        def create_search_sounds(*args, **kwargs): return []
+        def create_path_found_sound(): return None
+        def get_search_waveforms(*args, **kwargs): return []
+        def get_path_found_waveform(): return np.array([])
 
 @dataclass
 class Config:
@@ -43,6 +47,7 @@ class Config:
     fps: int = 30
     cache_dir: str = 'cache_data'
     dimension: str = '3d'
+    algorithm: str = 'bfs'
     
     @property
     def total_frames(self):
@@ -268,16 +273,118 @@ class PathVisualizer:
         if 'buildings' in self.features:
              self.features['buildings'] = self.features['buildings'].to_crs(crs)
 
+    def _heuristic(self, u, v):
+        """Heuristic function for A* (Euclidean distance)."""
+        return ((self.G.nodes[u]['x'] - self.G.nodes[v]['x']) ** 2 + 
+                (self.G.nodes[u]['y'] - self.G.nodes[v]['y']) ** 2) ** 0.5
+
+    def _astar_traversal(self, start_node, end_node):
+        """Yield edges as they are explored by A*."""
+        count = 0
+        open_set = []
+        heapq.heappush(open_set, (0, count, start_node))
+        
+        g_score = {start_node: 0}
+        visited = set()
+        
+        while open_set:
+            _, _, current = heapq.heappop(open_set)
+            
+            if current == end_node:
+                break
+            
+            if current in visited:
+                continue
+            visited.add(current)
+                
+            for neighbor in self.G.neighbors(current):
+                edge_data = self.G.get_edge_data(current, neighbor)[0]
+                weight = edge_data.get('length', 1)
+                
+                tentative_g_score = g_score[current] + weight
+                
+                if tentative_g_score < g_score.get(neighbor, float('inf')):
+                    g_score[neighbor] = tentative_g_score
+                    f_score = tentative_g_score + self._heuristic(neighbor, end_node)
+                    count += 1
+                    heapq.heappush(open_set, (f_score, count, neighbor))
+                    yield (current, neighbor)
+
+    def _dijkstra_traversal(self, start_node, end_node):
+        """Yield edges as they are explored by Dijkstra's algorithm."""
+        count = 0
+        open_set = []
+        heapq.heappush(open_set, (0, count, start_node))
+        
+        g_score = {start_node: 0}
+        visited = set()
+        
+        while open_set:
+            _, _, current = heapq.heappop(open_set)
+            
+            if current == end_node:
+                break
+            
+            if current in visited:
+                continue
+            visited.add(current)
+                
+            for neighbor in self.G.neighbors(current):
+                edge_data = self.G.get_edge_data(current, neighbor)[0]
+                weight = edge_data.get('length', 1)
+                
+                tentative_g_score = g_score[current] + weight
+                
+                if tentative_g_score < g_score.get(neighbor, float('inf')):
+                    g_score[neighbor] = tentative_g_score
+                    count += 1
+                    heapq.heappush(open_set, (tentative_g_score, count, neighbor))
+                    yield (current, neighbor)
+
+    def _greedy_bfs_traversal(self, start_node, end_node):
+        """Yield edges as they are explored by Greedy Best-First Search."""
+        count = 0
+        open_set = []
+        # Priority is only heuristic
+        h_start = self._heuristic(start_node, end_node)
+        heapq.heappush(open_set, (h_start, count, start_node))
+        
+        visited = set()
+        visited.add(start_node)
+        
+        while open_set:
+            _, _, current = heapq.heappop(open_set)
+            
+            if current == end_node:
+                break
+                
+            for neighbor in self.G.neighbors(current):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    h_score = self._heuristic(neighbor, end_node)
+                    count += 1
+                    heapq.heappush(open_set, (h_score, count, neighbor))
+                    yield (current, neighbor)
+
     def run_search(self):
-        """Run BFS and Shortest Path algorithms."""
-        print("\n[2/5] Calculating search expansion...")
+        """Run Search and Shortest Path algorithms."""
+        print(f"\n[2/5] Calculating search expansion ({self.config.algorithm.upper()})...")
         
         # Use projected coordinates
         start_node = ox.distance.nearest_nodes(self.G, self.start_x, self.start_y)
         end_node = ox.distance.nearest_nodes(self.G, self.end_x, self.end_y)
         
-        # BFS for visualization
-        for edge in nx.bfs_edges(self.G, source=start_node):
+        # Search Algorithm
+        if self.config.algorithm == 'astar':
+            iterator = self._astar_traversal(start_node, end_node)
+        elif self.config.algorithm == 'dijkstra':
+            iterator = self._dijkstra_traversal(start_node, end_node)
+        elif self.config.algorithm == 'greedy':
+            iterator = self._greedy_bfs_traversal(start_node, end_node)
+        else:
+            iterator = nx.bfs_edges(self.G, source=start_node)
+
+        for edge in iterator:
             u, v = edge
             data = self.G.get_edge_data(u, v)[0]
             if 'geometry' in data:
@@ -583,11 +690,12 @@ class PathVisualizer:
 def main():
     parser = argparse.ArgumentParser(description="3D Pathfinding Visualization")
     parser.add_argument('--mode', choices=['view', 'export', 'preview'], default='view', help="Run mode: 'view' for interactive, 'export' for video file, 'preview' for static check")
-    parser.add_argument('--output', default='tiktok_path.mp4', help="Output filename for export mode")
+    parser.add_argument('--output', default='path_viz.mp4', help="Output filename for export mode")
     parser.add_argument('--dim', choices=['2d', '3d'], default='3d', help="Dimension mode: '2d' or '3d'")
+    parser.add_argument('--algo', choices=['bfs', 'astar', 'dijkstra', 'greedy'], default='bfs', help="Search algorithm: 'bfs', 'astar', 'dijkstra', 'greedy'")
     args = parser.parse_args()
 
-    config = Config(dimension=args.dim)
+    config = Config(dimension=args.dim, algorithm=args.algo)
     viz = PathVisualizer(config)
     viz.run(mode=args.mode, output_file=args.output)
 
