@@ -1,65 +1,75 @@
 import argparse
 import sys
-import os
 import pickle
 import numpy as np
 import osmnx as ox
 import networkx as nx
 import wave
 import subprocess
-import heapq
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.collections import LineCollection
-from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple, List, Optional, Dict
+from pathlib import Path
 import pyproj
-from shapely.geometry import Point
 
-try:
-    from .sound_effects import init_sound_system, create_search_sounds, create_path_found_sound, get_search_waveforms, get_path_found_waveform
-except ImportError:
-    # Fallback for direct execution or if module not found
-    try:
-        from sound_effects import init_sound_system, create_search_sounds, create_path_found_sound, get_search_waveforms, get_path_found_waveform
-    except ImportError:
-        print("Warning: sound_effects module not found. Audio will be disabled.")
-        def init_sound_system(): return False
-        def create_search_sounds(*args, **kwargs): return []
-        def create_path_found_sound(): return None
-        def get_search_waveforms(*args, **kwargs): return []
-        def get_path_found_waveform(): return np.array([])
+from .sound_effects import (
+    init_sound_system, create_search_sounds, create_path_found_sound, 
+    get_search_waveforms, get_path_found_waveform
+)
+from .algorithms import ALGORITHMS
 
 @dataclass
 class Config:
     """Configuration for the visualization."""
-    start_coord: Tuple[float, float] = (27.7172, 85.3240)  # Kathmandu Center
-    end_coord: Tuple[float, float] = (27.6800, 85.3500)    # Kathmandu South-East
-    bbox_buffer: float = 0.025     # Increased buffer to ensure map fills the frame (was 0.005)
+    start_coord: Tuple[float, float] = (27.7172, 85.3240)
+    end_coord: Tuple[float, float] = (27.6800, 85.3500)
+    bbox_buffer: float = 0.025
     tilt_angle: float = 45
     rotation_angle: float = -45
-    search_color: str = '#1e90ff'  # Neon Blue
-    path_color: str = '#adff2f'    # Neon Green
-    bg_color: str = '#0b0b0b'      # Near black
+    search_color: str = '#1e90ff'
+    path_color: str = '#adff2f'
+    bg_color: str = '#0b0b0b'
     duration: int = 10
     fps: int = 30
-    cache_dir: str = 'cache_data'
+    cache_dir: Path = field(default_factory=lambda: Path('cache'))
+    output_dir: Path = field(default_factory=lambda: Path('output'))
     dimension: str = '3d'
     algorithm: str = 'bfs'
     
+    def __post_init__(self):
+        self.cache_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(exist_ok=True)
+
     @property
-    def total_frames(self):
+    def total_frames(self) -> int:
         return self.duration * self.fps
     
     @property
-    def phase_2_frames(self):
-        return 60  # 2 seconds for path highlight
+    def phase_2_frames(self) -> int:
+        return 60
         
     @property
-    def phase_1_frames(self):
+    def phase_1_frames(self) -> int:
         return self.total_frames - self.phase_2_frames
+
+    def get_bbox(self) -> Tuple[float, float, float, float]:
+        """Calculate 9:16 aspect ratio bounding box."""
+        cy = (self.start_coord[0] + self.end_coord[0]) / 2
+        cx = (self.start_coord[1] + self.end_coord[1]) / 2
+        
+        dy = abs(self.start_coord[0] - self.end_coord[0]) + 2 * self.bbox_buffer
+        dx = abs(self.start_coord[1] - self.end_coord[1]) + 2 * self.bbox_buffer
+        
+        target_ratio = 9 / 16
+        if dx / dy > target_ratio:
+            dy = dx / target_ratio
+        else:
+            dx = dy * target_ratio
+            
+        return cy + dy / 2, cy - dy / 2, cx + dx / 2, cx - dx / 2
 
 class PathVisualizer:
     def __init__(self, config: Config):
@@ -79,42 +89,12 @@ class PathVisualizer:
         self.audio_buffer = None
         self.sample_rate = 22050
         
-        # Calculate center
-        cy = (config.start_coord[0] + config.end_coord[0]) / 2
-        cx = (config.start_coord[1] + config.end_coord[1]) / 2
-        
-        # Calculate raw spans required to cover the path + buffer
-        dy = abs(config.start_coord[0] - config.end_coord[0]) + 2 * config.bbox_buffer
-        dx = abs(config.start_coord[1] - config.end_coord[1]) + 2 * config.bbox_buffer
-        
-        # Enforce 9:16 aspect ratio for the map data
-        # We want the map area to be proportional to 9:16 so it fills the screen
-        target_ratio = 9 / 16
-        current_ratio = dx / dy
-        
-        if current_ratio > target_ratio:
-            # Too wide, need to increase height
-            dy = dx / target_ratio
-        else:
-            # Too tall, need to increase width
-            dx = dy * target_ratio
-            
-        # Set boundaries
-        self.north = cy + dy / 2
-        self.south = cy - dy / 2
-        self.east = cx + dx / 2
-        self.west = cx - dx / 2
-        
-        # Ensure cache directory exists
-        os.makedirs(config.cache_dir, exist_ok=True)
+        self.north, self.south, self.east, self.west = config.get_bbox()
 
     def init_audio(self):
         """Initialize audio system."""
         print("[0/5] Initializing sound system...")
-        
-        # Calculate number of search beeps needed
-        # We play a beep every 5 frames during phase 1
-        num_beeps = int(self.config.phase_1_frames / 5) + 2  # Add buffer
+        num_beeps = int(self.config.phase_1_frames / 5) + 2
         
         if self.mode == 'view':
             self.sound_enabled = init_sound_system()
@@ -122,14 +102,9 @@ class PathVisualizer:
                 self.sounds['search'] = create_search_sounds(num_steps=num_beeps)
                 self.sounds['found'] = create_path_found_sound()
                 print("    ✓ Sound effects loaded")
-            else:
-                print("    ⚠ Sound effects disabled")
         elif self.mode == 'export':
-            # Load waveforms for export
             self.waveforms['search'] = get_search_waveforms(num_steps=num_beeps)
             self.waveforms['found'] = get_path_found_waveform()
-            
-            # Initialize audio buffer
             total_samples = int(self.config.total_frames / self.config.fps * self.sample_rate)
             self.audio_buffer = np.zeros(total_samples, dtype=np.float32)
             print("    ✓ Audio waveforms loaded for export")
@@ -180,13 +155,11 @@ class PathVisualizer:
         """Download and prepare map data with caching."""
         print("\n[1/5] Loading map data...")
         
-        # Generate cache keys based on bbox
         bbox_str = f"{self.north:.4f}_{self.south:.4f}_{self.east:.4f}_{self.west:.4f}"
-        graph_cache_path = os.path.join(self.config.cache_dir, f"graph_{bbox_str}.graphml")
-        features_cache_path = os.path.join(self.config.cache_dir, f"features_{bbox_str}.pkl")
+        graph_cache_path = self.config.cache_dir / f"graph_{bbox_str}.graphml"
+        features_cache_path = self.config.cache_dir / f"features_{bbox_str}.pkl"
         
-        # 1. Load Graph
-        if os.path.exists(graph_cache_path):
+        if graph_cache_path.exists():
             print(f"    → Loading graph from cache: {graph_cache_path}")
             self.G = ox.load_graphml(graph_cache_path)
         else:
@@ -195,211 +168,55 @@ class PathVisualizer:
                 bbox=(self.north, self.south, self.east, self.west), 
                 network_type='drive'
             )
-            print(f"    → Saving graph to cache...")
             ox.save_graphml(self.G, graph_cache_path)
             
-        print(f"    ✓ Graph loaded: {len(self.G.nodes)} nodes, {len(self.G.edges)} edges")
-
-        # Project graph to UTM (Meters)
-        print("    → Projecting graph to UTM...")
         self.G = ox.project_graph(self.G)
-        
-        # Update bounds based on projected graph
         nodes = ox.graph_to_gdfs(self.G, edges=False)
-        self.west = nodes.geometry.x.min()
-        self.east = nodes.geometry.x.max()
-        self.south = nodes.geometry.y.min()
-        self.north = nodes.geometry.y.max()
+        self.west, self.east = nodes.geometry.x.min(), nodes.geometry.x.max()
+        self.south, self.north = nodes.geometry.y.min(), nodes.geometry.y.max()
         
-        # Project start/end coordinates
         crs = self.G.graph['crs']
         transformer = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        
-        # Config coords are (Lat, Lon) -> (Y, X)
-        # Transformer expects (Lon, Lat) -> (X, Y)
-        start_lon, start_lat = self.config.start_coord[1], self.config.start_coord[0]
-        end_lon, end_lat = self.config.end_coord[1], self.config.end_coord[0]
-        
-        self.start_x, self.start_y = transformer.transform(start_lon, start_lat)
-        self.end_x, self.end_y = transformer.transform(end_lon, end_lat)
+        self.start_x, self.start_y = transformer.transform(self.config.start_coord[1], self.config.start_coord[0])
+        self.end_x, self.end_y = transformer.transform(self.config.end_coord[1], self.config.end_coord[0])
 
-        # 2. Load Features
-        if os.path.exists(features_cache_path):
-            print(f"    → Loading features from cache: {features_cache_path}")
+        if features_cache_path.exists():
             with open(features_cache_path, 'rb') as f:
                 self.features = pickle.load(f)
-            print(f"    ✓ Loaded features")
         else:
-            print("    → Fetching buildings from OSM...")
-            tags = {'building': True}
             try:
-                # Note: features_from_bbox uses Lat/Lon even if we want projected later
-                # We use the original Lat/Lon bounds from __init__ (stored in config or recalculated?)
-                # Wait, self.north/south/east/west were overwritten above!
-                # We need to use the original Lat/Lon bounds for fetching features if not cached.
-                # But we already overwrote them.
-                # Let's recalculate original bounds for fetching.
-                
-                cy = (self.config.start_coord[0] + self.config.end_coord[0]) / 2
-                cx = (self.config.start_coord[1] + self.config.end_coord[1]) / 2
-                dy = abs(self.config.start_coord[0] - self.config.end_coord[0]) + 2 * self.config.bbox_buffer
-                dx = abs(self.config.start_coord[1] - self.config.end_coord[1]) + 2 * self.config.bbox_buffer
-                
-                # Re-apply aspect ratio logic for fetching bounds
-                target_ratio = 9 / 16
-                current_ratio = dx / dy
-                if current_ratio > target_ratio:
-                    dy = dx / target_ratio
-                else:
-                    dx = dy * target_ratio
-                
-                orig_north = cy + dy / 2
-                orig_south = cy - dy / 2
-                orig_east = cx + dx / 2
-                orig_west = cx - dx / 2
-
-                gdf = ox.features_from_bbox(bbox=(orig_north, orig_south, orig_east, orig_west), tags=tags)
+                n, s, e, w = self.config.get_bbox()
+                gdf = ox.features_from_bbox(bbox=(n, s, e, w), tags={'building': True})
                 if 'building' in gdf.columns:
                     self.features['buildings'] = gdf[gdf['building'].notna()]
-                
-                print(f"    → Saving features to cache...")
                 with open(features_cache_path, 'wb') as f:
                     pickle.dump(self.features, f)
-                print(f"    ✓ Loaded features")
             except Exception as e:
                 print(f"    ⚠ Could not load features: {e}")
 
-        # Project features to match graph
         if 'buildings' in self.features:
              self.features['buildings'] = self.features['buildings'].to_crs(crs)
-
-    def _heuristic(self, u, v):
-        """Heuristic function for A* (Euclidean distance)."""
-        return ((self.G.nodes[u]['x'] - self.G.nodes[v]['x']) ** 2 + 
-                (self.G.nodes[u]['y'] - self.G.nodes[v]['y']) ** 2) ** 0.5
-
-    def _astar_traversal(self, start_node, end_node):
-        """Yield edges as they are explored by A*."""
-        count = 0
-        open_set = []
-        heapq.heappush(open_set, (0, count, start_node))
-        
-        g_score = {start_node: 0}
-        visited = set()
-        
-        while open_set:
-            _, _, current = heapq.heappop(open_set)
-            
-            if current == end_node:
-                break
-            
-            if current in visited:
-                continue
-            visited.add(current)
-                
-            for neighbor in self.G.neighbors(current):
-                edge_data = self.G.get_edge_data(current, neighbor)[0]
-                weight = edge_data.get('length', 1)
-                
-                tentative_g_score = g_score[current] + weight
-                
-                if tentative_g_score < g_score.get(neighbor, float('inf')):
-                    g_score[neighbor] = tentative_g_score
-                    f_score = tentative_g_score + self._heuristic(neighbor, end_node)
-                    count += 1
-                    heapq.heappush(open_set, (f_score, count, neighbor))
-                    yield (current, neighbor)
-
-    def _dijkstra_traversal(self, start_node, end_node):
-        """Yield edges as they are explored by Dijkstra's algorithm."""
-        count = 0
-        open_set = []
-        heapq.heappush(open_set, (0, count, start_node))
-        
-        g_score = {start_node: 0}
-        visited = set()
-        
-        while open_set:
-            _, _, current = heapq.heappop(open_set)
-            
-            if current == end_node:
-                break
-            
-            if current in visited:
-                continue
-            visited.add(current)
-                
-            for neighbor in self.G.neighbors(current):
-                edge_data = self.G.get_edge_data(current, neighbor)[0]
-                weight = edge_data.get('length', 1)
-                
-                tentative_g_score = g_score[current] + weight
-                
-                if tentative_g_score < g_score.get(neighbor, float('inf')):
-                    g_score[neighbor] = tentative_g_score
-                    count += 1
-                    heapq.heappush(open_set, (tentative_g_score, count, neighbor))
-                    yield (current, neighbor)
-
-    def _greedy_bfs_traversal(self, start_node, end_node):
-        """Yield edges as they are explored by Greedy Best-First Search."""
-        count = 0
-        open_set = []
-        # Priority is only heuristic
-        h_start = self._heuristic(start_node, end_node)
-        heapq.heappush(open_set, (h_start, count, start_node))
-        
-        visited = set()
-        visited.add(start_node)
-        
-        while open_set:
-            _, _, current = heapq.heappop(open_set)
-            
-            if current == end_node:
-                break
-                
-            for neighbor in self.G.neighbors(current):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    h_score = self._heuristic(neighbor, end_node)
-                    count += 1
-                    heapq.heappush(open_set, (h_score, count, neighbor))
-                    yield (current, neighbor)
 
     def run_search(self):
         """Run Search and Shortest Path algorithms."""
         print(f"\n[2/5] Calculating search expansion ({self.config.algorithm.upper()})...")
         
-        # Use projected coordinates
         start_node = ox.distance.nearest_nodes(self.G, self.start_x, self.start_y)
         end_node = ox.distance.nearest_nodes(self.G, self.end_x, self.end_y)
         
-        # Search Algorithm
-        if self.config.algorithm == 'astar':
-            iterator = self._astar_traversal(start_node, end_node)
-        elif self.config.algorithm == 'dijkstra':
-            iterator = self._dijkstra_traversal(start_node, end_node)
-        elif self.config.algorithm == 'greedy':
-            iterator = self._greedy_bfs_traversal(start_node, end_node)
-        else:
-            iterator = nx.bfs_edges(self.G, source=start_node)
+        search_func = ALGORITHMS.get(self.config.algorithm, ALGORITHMS['bfs'])
+        iterator = search_func(self.G, start_node, end_node)
 
-        for edge in iterator:
-            u, v = edge
+        for u, v in iterator:
             data = self.G.get_edge_data(u, v)[0]
-            if 'geometry' in data:
-                coords = list(data['geometry'].coords)
-            else:
-                coords = [(self.G.nodes[u]['x'], self.G.nodes[u]['y']), 
-                          (self.G.nodes[v]['x'], self.G.nodes[v]['y'])]
+            coords = list(data['geometry'].coords) if 'geometry' in data else [
+                (self.G.nodes[u]['x'], self.G.nodes[u]['y']), 
+                (self.G.nodes[v]['x'], self.G.nodes[v]['y'])
+            ]
             
-            # Convert to 3D numpy array (N, 3)
-            # Search layer below roads (z=-100)
             if len(coords) >= 2:
-                if self.config.dimension == '3d':
-                    coords_3d = np.array([(c[0], c[1], -100) for c in coords])
-                else:
-                    coords_3d = np.array([(c[0], c[1]) for c in coords])
+                z = -100 if self.config.dimension == '3d' else 0
+                coords_3d = np.array([(c[0], c[1], z) for c in coords]) if self.config.dimension == '3d' else np.array([(c[0], c[1]) for c in coords])
                 self.explored_edges.append(coords_3d)
             
             if v == end_node:
@@ -407,7 +224,6 @@ class PathVisualizer:
         
         print(f"    ✓ Explored {len(self.explored_edges)} edges")
 
-        # Shortest Path
         print("\n[3/5] Computing shortest path...")
         try:
             route = nx.shortest_path(self.G, start_node, end_node, weight='length')
@@ -420,17 +236,13 @@ class PathVisualizer:
                     route_coords.extend([(self.G.nodes[u]['x'], self.G.nodes[u]['y']), 
                                        (self.G.nodes[v]['x'], self.G.nodes[v]['y'])])
             
-            # Convert to 3D numpy array (N, 3) with lower Z offset (z=-200)
             if len(route_coords) >= 2:
-                if self.config.dimension == '3d':
-                    self.route_coords_3d = np.array([(c[0], c[1], -200) for c in route_coords])
-                else:
-                    self.route_coords_3d = np.array([(c[0], c[1]) for c in route_coords])
+                z = -200 if self.config.dimension == '3d' else 0
+                self.route_coords_3d = np.array([(c[0], c[1], z) for c in route_coords]) if self.config.dimension == '3d' else np.array([(c[0], c[1]) for c in route_coords])
             else:
                 self.route_coords_3d = np.empty((0, 3 if self.config.dimension == '3d' else 2))
-            print(f"    ✓ Final route: {len(route)} nodes")
         except nx.NetworkXNoPath:
-            print("    ⚠ NO PATH FOUND! Check coordinates.")
+            print("    ⚠ NO PATH FOUND!")
             self.route_coords_3d = np.empty((0, 3 if self.config.dimension == '3d' else 2))
 
     def _plot_polygon_3d(self, poly, color, alpha, z=-0.0001):
@@ -549,12 +361,10 @@ class PathVisualizer:
         self.ax.add_collection(self.collections['path_glow_inner'])
         self.ax.add_collection(self.collections['path_line'])
 
-        # HUD
         hud_font = {'family': 'monospace', 'weight': 'bold', 'size': 14}
         self.texts['status'] = self.fig.text(0.05, 0.95, "SYSTEM: ONLINE", color='#00ff00', alpha=0.8, ha='left', va='top', **hud_font)
         self.texts['scan'] = self.fig.text(0.05, 0.92, "SCANNED: 0", color=self.config.search_color, alpha=0.8, ha='left', va='top', **hud_font)
-        self.fig.text(0.95, 0.02, "LOC: KATHMANDU", color='white', alpha=0.5, ha='right', va='bottom', fontsize=10)
-
+  
     def update_frame(self, frame):
         """Animation update function."""
         # Phase 1: Search
@@ -617,9 +427,16 @@ class PathVisualizer:
         return (self.collections['search'], self.collections['path_line'], 
                 self.texts['status'], self.texts['scan'])
 
-    def run(self, mode='view', output_file='output.mp4'):
+    def run(self, mode='view', output_file=None):
         """Execute the visualization."""
         self.mode = mode
+        
+        if output_file is None:
+            bbox_str = f"{self.north:.4f}_{self.south:.4f}_{self.east:.4f}_{self.west:.4f}"
+            output_file = f"path_viz_{self.config.algorithm}_{bbox_str}.mp4"
+            
+        output_path = self.config.output_dir / Path(output_file).name
+        
         self.init_audio()
         self.load_data()
         self.run_search()
@@ -627,14 +444,12 @@ class PathVisualizer:
         
         if mode == 'preview':
             print("\n[5/5] Showing preview (static)...")
-            # Show full search and path for preview
             self.collections['search'].set_segments(self.explored_edges)
             path_segments = [self.route_coords_3d]
             self.collections['path_glow_outer'].set_segments(path_segments)
             self.collections['path_glow_inner'].set_segments(path_segments)
             self.collections['path_line'].set_segments(path_segments)
             
-            # Update HUD for preview
             self.texts['status'].set_text("STATUS: PREVIEW MODE")
             self.texts['status'].set_color(self.config.path_color)
             self.texts['scan'].set_text(f"SCANNED: {len(self.explored_edges)}")
@@ -654,45 +469,38 @@ class PathVisualizer:
         if mode == 'view':
             plt.show()
         elif mode == 'export':
-            print(f"    → Rendering to {output_file}...")
-            writer = FFMpegWriter(fps=self.config.fps, metadata=dict(artist='Me'), bitrate=1800)
-            ani.save(output_file, writer=writer)
-            print(f"    ✓ Video saved to {output_file}")
+            print(f"    → Rendering to {output_path}...")
+            writer = FFMpegWriter(fps=self.config.fps, bitrate=1800)
+            ani.save(str(output_path), writer=writer)
             
-            # Save audio and merge
-            audio_file = output_file.replace('.mp4', '.wav')
-            self.save_audio(audio_file)
+            audio_path = output_path.with_suffix('.wav')
+            self.save_audio(str(audio_path))
             
-            # Merge using ffmpeg
-            final_output = output_file.replace('.mp4', '_with_audio.mp4')
-            print(f"    → Merging audio and video to {final_output}...")
+            final_output = output_path.parent / f"{output_path.stem}_with_audio.mp4"
+            print(f"    → Merging audio and video...")
             try:
                 subprocess.run([
                     'ffmpeg', '-y',
-                    '-i', output_file,
-                    '-i', audio_file,
+                    '-i', str(output_path),
+                    '-i', str(audio_path),
                     '-c:v', 'copy',
                     '-c:a', 'aac',
                     '-strict', 'experimental',
-                    final_output
+                    str(final_output)
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                print(f"    ✓ Final video saved: {final_output}")
                 
-                # Cleanup
-                os.remove(audio_file)
-                # Optionally replace original
-                os.replace(final_output, output_file)
-                print(f"    ✓ Replaced original file")
+                audio_path.unlink(missing_ok=True)
+                final_output.replace(output_path)
+                print(f"    ✓ Final video saved: {output_path}")
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 print(f"    ⚠ Could not merge audio: {e}")
-                print(f"    ⚠ Audio saved separately as {audio_file}")
 
 def main():
     parser = argparse.ArgumentParser(description="3D Pathfinding Visualization")
-    parser.add_argument('--mode', choices=['view', 'export', 'preview'], default='view', help="Run mode: 'view' for interactive, 'export' for video file, 'preview' for static check")
-    parser.add_argument('--output', default='path_viz.mp4', help="Output filename for export mode")
-    parser.add_argument('--dim', choices=['2d', '3d'], default='3d', help="Dimension mode: '2d' or '3d'")
-    parser.add_argument('--algo', choices=['bfs', 'astar', 'dijkstra', 'greedy'], default='bfs', help="Search algorithm: 'bfs', 'astar', 'dijkstra', 'greedy'")
+    parser.add_argument('--mode', choices=['view', 'export', 'preview'], default='view')
+    parser.add_argument('--output', default=None)
+    parser.add_argument('--dim', choices=['2d', '3d'], default='3d')
+    parser.add_argument('--algo', choices=['bfs', 'astar', 'dijkstra', 'greedy'], default='bfs')
     args = parser.parse_args()
 
     config = Config(dimension=args.dim, algorithm=args.algo)
