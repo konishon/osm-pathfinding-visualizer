@@ -253,8 +253,28 @@ class PathVisualizer:
             self.ax.set_box_aspect((9, 16, 5))
             self.ax.dist = 6
         else:
-            self.ax = self.fig.add_subplot(111)
+            # Use full figure area for 2D to remove margins
+            self.ax = self.fig.add_axes([0, 0, 1, 1])
             self.ax.set_aspect('equal')
+            
+            # Adjust limits to exactly 9:16 aspect ratio in projected meters
+            width = self.east - self.west
+            height = self.north - self.south
+            target_ratio = 9 / 16
+            current_ratio = width / height
+            
+            if current_ratio > target_ratio:
+                # Too wide, increase height
+                new_height = width / target_ratio
+                center_y = (self.north + self.south) / 2
+                self.south = center_y - new_height / 2
+                self.north = center_y + new_height / 2
+            else:
+                # Too tall, increase width
+                new_width = height * target_ratio
+                center_x = (self.east + self.west) / 2
+                self.west = center_x - new_width / 2
+                self.east = center_x + new_width / 2
             
         self.ax.set_facecolor(self.config.bg_color)
         self.ax.set_axis_off()

@@ -7,7 +7,7 @@ class Config:
     """Configuration for the visualization."""
     start_coord: Tuple[float, float] = (28.190659105384285, 84.01356160200756)
     end_coord: Tuple[float, float] = (28.208707411529435, 83.95717153743145)
-    bbox_buffer: float = 0.025
+    bbox_buffer: float = 0.015
     tilt_angle: float = 45
     rotation_angle: float = -45
     search_color: str = '#1e90ff'
@@ -30,10 +30,12 @@ class Config:
     
     @property
     def phase_2_frames(self) -> int:
-        return 60
+        """20% of total frames for path highlight, minimum 30 frames."""
+        return max(30, int(self.total_frames * 0.2))
         
     @property
     def phase_1_frames(self) -> int:
+        """Remaining frames for search phase."""
         return self.total_frames - self.phase_2_frames
 
     def get_bbox(self) -> Tuple[float, float, float, float]:

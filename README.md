@@ -2,7 +2,7 @@
 
 A Python tool to visualize pathfinding algorithms on real-world maps with 3D effects and dynamic sound.
 
-![Demo](demo1.gif)
+![Demo](output/demo_astar.gif)
 
 ## Features
 - **Multiple Algorithms**: BFS, A*, Dijkstra, and Greedy Best-First Search.
@@ -11,6 +11,15 @@ A Python tool to visualize pathfinding algorithms on real-world maps with 3D eff
 - **Dynamic Sound**: Growing pitch sound effects during search and a triumphant "found" sound.
 - **Real Map Data**: Fetches street networks from OpenStreetMap.
 - **Video/GIF Export**: Export animations to high-quality MP4 with audio or silent GIFs.
+
+## Supported Algorithms
+
+| Algorithm | Type | Description |
+| :--- | :--- | :--- |
+| **BFS** | Unweighted | Explores equally in all directions. Guarantees shortest path on unweighted graphs. |
+| **Dijkstra** | Weighted | Explores based on actual road distance. Guarantees the shortest path. |
+| **A\*** | Weighted + Heuristic | Uses distance to target to guide search. Efficiently finds the shortest path. |
+| **Greedy BFS** | Heuristic | Moves directly towards the target. Fast but not guaranteed to be shortest. |
 
 ## Requirements
 - **Python 3.10+**
@@ -31,12 +40,13 @@ A Python tool to visualize pathfinding algorithms on real-world maps with 3D eff
 ## CLI Usage
 
 ```bash
-path-viz --mode [view|export|preview] --algo [bfs|astar|dijkstra|greedy] --dim [2d|3d] --output demo.gif
+path-viz --mode [view|export|preview] --algo [bfs|astar|dijkstra|greedy] --dim [2d|3d] --duration 10 --output demo.gif
 ```
 
 - `--mode`: `view` (interactive), `export` (save to mp4/gif), `preview` (static check).
 - `--algo`: Choose the search algorithm.
 - `--dim`: `2d` or `3d` visualization.
+- `--duration`: Total animation length in seconds (default: 10).
 - `--output`: Optional filename (e.g., `result.mp4` or `demo.gif`).
 
 ## Output
