@@ -52,3 +52,6 @@ path-viz --mode [view|export|preview] --algo [bfs|astar|dijkstra|greedy] --dim [
 ## Output
 - **Videos**: Saved in the `output/` directory.
 - **Cache**: Map data and features are cached in the `cache/` directory.
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

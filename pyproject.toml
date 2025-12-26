@@ -2,7 +2,8 @@
 name = "path-finder-viz"
 version = "0.1.0"
 description = "Dijkstra Search & Path Visualization for viral-style algorithm animations"
-authors = ["Your Name <you@example.com>"]
+authors = ["nishon <nishon@naxa.com.np>"]
+license = "MIT"
 readme = "README.md"
 packages = [{include = "path_viz", from = "src"}]
 
