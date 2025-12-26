@@ -7,7 +7,7 @@ import networkx as nx
 import wave
 import subprocess
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, FFMpegWriter
+from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 from typing import Tuple, List, Optional, Dict
@@ -136,16 +136,43 @@ class PathVisualizer:
         else:
             try:
                 n, s, e, w = self.config.get_bbox()
-                gdf = ox.features_from_bbox(bbox=(n, s, e, w), tags={'building': True})
-                if 'building' in gdf.columns:
-                    self.features['buildings'] = gdf[gdf['building'].notna()]
+                tags = {
+                    'building': True,
+                    'natural': ['water', 'wood', 'scrub'],
+                    'waterway': True,
+                    'leisure': ['park', 'garden', 'nature_reserve'],
+                    'landuse': ['forest', 'grass', 'meadow', 'orchard']
+                }
+                gdf = ox.features_from_bbox(bbox=(n, s, e, w), tags=tags)
+                
+                # Categorize features
+                if not gdf.empty:
+                    if 'building' in gdf.columns:
+                        self.features['buildings'] = gdf[gdf['building'].notna()]
+                    
+                    # Water features
+                    water_mask = (
+                        (gdf.get('natural') == 'water') | 
+                        (gdf.get('waterway').notna() if 'waterway' in gdf.columns else False)
+                    )
+                    self.features['water'] = gdf[water_mask]
+                    
+                    # Greenery features
+                    green_mask = (
+                        (gdf.get('leisure').isin(['park', 'garden', 'nature_reserve']) if 'leisure' in gdf.columns else False) |
+                        (gdf.get('landuse').isin(['forest', 'grass', 'meadow', 'orchard']) if 'landuse' in gdf.columns else False) |
+                        (gdf.get('natural').isin(['wood', 'scrub']) if 'natural' in gdf.columns else False)
+                    )
+                    self.features['greenery'] = gdf[green_mask]
+
                 with open(features_cache_path, 'wb') as f:
                     pickle.dump(self.features, f)
             except Exception as e:
                 print(f"    ⚠ Could not load features: {e}")
 
-        if 'buildings' in self.features:
-             self.features['buildings'] = self.features['buildings'].to_crs(crs)
+        # Project features to match graph
+        for key in self.features:
+             self.features[key] = self.features[key].to_crs(crs)
 
     def run_search(self):
         """Run Search and Shortest Path algorithms."""
@@ -236,11 +263,15 @@ class PathVisualizer:
         self.ax.set_xlim(self.west, self.east)
         self.ax.set_ylim(self.south, self.north)
 
-        # Render Buildings
-        # if 'buildings' in self.features:
-        #     print("    → Rendering buildings...")
-        #     for poly in self.features['buildings'].geometry[:1000]:  # Limit for performance
-        #         self._plot_polygon_3d(poly, '#1f1f24', 0.5, z=-50)
+        # Render Features (2D only)
+        if self.config.dimension == '2d':
+            print("    → Rendering map features...")
+            if 'water' in self.features and not self.features['water'].empty:
+                self.features['water'].plot(ax=self.ax, color='#0e2a3a', alpha=1.0, zorder=1)
+            if 'greenery' in self.features and not self.features['greenery'].empty:
+                self.features['greenery'].plot(ax=self.ax, color='#142614', alpha=1.0, zorder=1)
+            if 'buildings' in self.features and not self.features['buildings'].empty:
+                self.features['buildings'].plot(ax=self.ax, color='#1f1f24', alpha=1.0, zorder=1)
 
         # Render Roads
         print("    → Rendering roads...")
@@ -381,6 +412,11 @@ class PathVisualizer:
         """Execute the visualization."""
         self.mode = mode
         
+        print(f"\n[START] Pathfinding Visualization")
+        print(f"    → Start: {self.config.start_coord}")
+        print(f"    → End:   {self.config.end_coord}")
+        print(f"    → Algorithm: {self.config.algorithm.upper()}")
+        
         if output_file is None:
             bbox_str = f"{self.north:.4f}_{self.south:.4f}_{self.east:.4f}_{self.west:.4f}"
             output_file = f"path_viz_{self.config.algorithm}_{bbox_str}.mp4"
@@ -419,7 +455,15 @@ class PathVisualizer:
         if mode == 'view':
             plt.show()
         elif mode == 'export':
+            is_gif = output_path.suffix.lower() == '.gif'
             print(f"    → Rendering to {output_path}...")
+            
+            if is_gif:
+                writer = PillowWriter(fps=self.config.fps)
+                ani.save(str(output_path), writer=writer)
+                print(f"    ✓ GIF saved: {output_path}")
+                return  # No audio for GIFs
+                
             writer = FFMpegWriter(fps=self.config.fps, bitrate=1800)
             ani.save(str(output_path), writer=writer)
             
@@ -447,13 +491,15 @@ class PathVisualizer:
 
 def main():
     parser = argparse.ArgumentParser(description="3D Pathfinding Visualization")
-    parser.add_argument('--mode', choices=['view', 'export', 'preview'], default='view')
-    parser.add_argument('--output', default=None)
-    parser.add_argument('--dim', choices=['2d', '3d'], default='3d')
-    parser.add_argument('--algo', choices=['bfs', 'astar', 'dijkstra', 'greedy'], default='bfs')
+    parser.add_argument('--mode', choices=['view', 'export', 'preview'], default='view', help="Run mode")
+    parser.add_argument('--output', default=None, help="Output filename (e.g. .mp4 or .gif)")
+    parser.add_argument('--dim', choices=['2d', '3d'], default='3d', help="Dimension mode")
+    parser.add_argument('--algo', choices=['bfs', 'astar', 'dijkstra', 'greedy'], default='bfs', help="Search algorithm")
+    parser.add_argument('--duration', type=int, default=10, help="Animation duration in seconds")
+    parser.add_argument('--fps', type=int, default=30, help="Frames per second")
     args = parser.parse_args()
 
-    config = Config(dimension=args.dim, algorithm=args.algo)
+    config = Config(dimension=args.dim, algorithm=args.algo, duration=args.duration, fps=args.fps)
     viz = PathVisualizer(config)
     viz.run(mode=args.mode, output_file=args.output)
 

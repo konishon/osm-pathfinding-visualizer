@@ -5,8 +5,8 @@ from pathlib import Path
 @dataclass
 class Config:
     """Configuration for the visualization."""
-    start_coord: Tuple[float, float] = (27.7172, 85.3240)
-    end_coord: Tuple[float, float] = (27.6800, 85.3500)
+    start_coord: Tuple[float, float] = (28.190659105384285, 84.01356160200756)
+    end_coord: Tuple[float, float] = (28.208707411529435, 83.95717153743145)
     bbox_buffer: float = 0.025
     tilt_angle: float = 45
     rotation_angle: float = -45
