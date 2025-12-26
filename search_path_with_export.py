@@ -3,20 +3,26 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.collections import LineCollection
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 import numpy as np
 import os
 from sound_effects import init_sound_system, create_search_sounds, create_path_found_sound
 
 # --- CONFIGURATION ---
-CITY_POINT = (27.7172, 85.3240)   # Kathmandu, Nepal (city center)
-DISTANCE = 2000                   # Search radius in meters
+START_COORD = (27.7172, 85.3240)  # Kathmandu Center
+END_COORD = (27.6800, 85.3500)    # Kathmandu South-East
+BBOX_BUFFER = 0.005               # Buffer in degrees around the points
+TILT_ANGLE = 45                   # Elevation angle for 3D
+ROTATION_ANGLE = -45              # Azimuth angle for 3D
+
 SEARCH_COLOR = '#1e90ff'          # Neon Blue
 PATH_COLOR = '#adff2f'            # Neon Green
 BG_COLOR = '#0b0b0b'              # Near black
 OUTPUT_FILE = 'search_path_animation.mp4'
 
 print("=" * 60)
-print("Search & Path Visualization - WITH VIDEO EXPORT")
+print("Search & Path Visualization - 3D WITH VIDEO EXPORT")
 print("=" * 60)
 
 # Initialize sound system
@@ -33,7 +39,12 @@ else:
 
 # 1. Load the map
 print("\n[1/4] Downloading map data (this may take a moment)...")
-G = ox.graph_from_point(CITY_POINT, dist=DISTANCE, network_type='drive')
+north = max(START_COORD[0], END_COORD[0]) + BBOX_BUFFER
+south = min(START_COORD[0], END_COORD[0]) - BBOX_BUFFER
+east = max(START_COORD[1], END_COORD[1]) + BBOX_BUFFER
+west = min(START_COORD[1], END_COORD[1]) - BBOX_BUFFER
+
+G = ox.graph_from_bbox(north, south, east, west, network_type='drive')
 
 # --- NEW: Fetch Contextual Features (Buildings, Water, Parks) ---
 print("    → Fetching buildings, water, and parks...")
@@ -44,7 +55,7 @@ tags = {
     'waterway': True
 }
 try:
-    features = ox.features_from_point(CITY_POINT, tags, dist=DISTANCE)
+    features = ox.features_from_bbox(north, south, east, west, tags)
     # Separate features
     buildings = features[features['building'].notna()]
     water = features[features['natural'] == 'water']
@@ -55,8 +66,8 @@ except Exception as e:
     print(f"    ⚠ Could not load features: {e}")
     buildings = water = waterways = parks = None
 
-start_node = ox.distance.nearest_nodes(G, CITY_POINT[1], CITY_POINT[0])
-end_node = ox.distance.nearest_nodes(G, 85.3500, 27.6800)
+start_node = ox.distance.nearest_nodes(G, START_COORD[1], START_COORD[0])
+end_node = ox.distance.nearest_nodes(G, END_COORD[1], END_COORD[0])
 
 print(f"    ✓ Graph loaded: {len(G.nodes)} nodes, {len(G.edges)} edges")
 print(f"    ✓ Start node: {start_node}")
@@ -73,7 +84,9 @@ for edge in nx.bfs_edges(G, source=start_node):
     else:
         coords = [(G.nodes[u]['x'], G.nodes[u]['y']), (G.nodes[v]['x'], G.nodes[v]['y'])]
     
-    explored_edges.append(coords)
+    # Convert to 3D (x, y, z=0)
+    coords_3d = [(c[0], c[1], 0) for c in coords]
+    explored_edges.append(coords_3d)
     if v == end_node: 
         break
 
@@ -90,6 +103,9 @@ for u, v in zip(route[:-1], route[1:]):
     else:
         route_coords.extend([(G.nodes[u]['x'], G.nodes[u]['y']), (G.nodes[v]['x'], G.nodes[v]['y'])])
 
+# Convert to 3D
+route_coords_3d = [(c[0], c[1], 0.01) for c in route_coords] # Slightly above ground
+
 print(f"    ✓ Final route: {len(route)} nodes, {len(route_coords)} coordinates")
 
 # 4. Setup Plotting
@@ -99,68 +115,77 @@ print("\n[4/4] Setting up animation...")
 fig_width = 9
 fig_height = 16
 fig = plt.figure(figsize=(fig_width, fig_height), dpi=100, facecolor=BG_COLOR)
-ax = fig.add_subplot(111)
+ax = fig.add_subplot(111, projection='3d')
 ax.set_facecolor(BG_COLOR)
 
-# --- NEW: Plot Contextual Layers ---
+# Set 3D view
+ax.view_init(elev=TILT_ANGLE, azim=ROTATION_ANGLE)
+
+# Hide axes for clean look
+ax.set_axis_off()
+
+# --- Plot Contextual Layers in 3D ---
+def plot_polygon_3d(ax, poly, color, alpha, z=0):
+    if poly.geom_type == 'Polygon':
+        x, y = poly.exterior.xy
+        verts = [list(zip(x, y, [z]*len(x)))]
+        poly_coll = Poly3DCollection(verts, color=color, alpha=alpha)
+        ax.add_collection3d(poly_coll)
+    elif poly.geom_type == 'MultiPolygon':
+        for p in poly.geoms:
+            x, y = p.exterior.xy
+            verts = [list(zip(x, y, [z]*len(x)))]
+            poly_coll = Poly3DCollection(verts, color=color, alpha=alpha)
+            ax.add_collection3d(poly_coll)
+
 if buildings is not None:
-    # Plot water (Dark Blue-Grey)
+    print("    → Rendering 3D features...")
+    # Plot water
     if not water.empty:
-        water.plot(ax=ax, color='#1a2634', alpha=0.7, zorder=1)
-    if not waterways.empty:
-        waterways.plot(ax=ax, color='#1a2634', linewidth=2, alpha=0.7, zorder=1)
+        for poly in water.geometry:
+            plot_polygon_3d(ax, poly, '#1a2634', 0.7, z=0)
     
-    # Plot parks (Dark Green-Grey)
-    if not parks.empty:
-        parks.plot(ax=ax, color='#1a332a', alpha=0.6, zorder=1)
-
-    # Plot buildings (Dark Grey with slight purple tint)
+    # Plot buildings (with height simulation)
     if not buildings.empty:
-        buildings.plot(ax=ax, color='#1f1f24', alpha=0.5, zorder=2)
+        # Only plot a subset if too many for performance
+        for poly in buildings.geometry[:2000]:
+            plot_polygon_3d(ax, poly, '#1f1f24', 0.5, z=0)
 
-# Plot the graph edges (Roads) - Dimmer to let the search pop
-ox.plot_graph(G, ax=ax, show=False, close=False, bgcolor=BG_COLOR, 
-              edge_color='#2a2a2a', edge_linewidth=0.8, node_size=0)
+# Plot the graph edges (Roads)
+road_lines = []
+for u, v, data in G.edges(data=True):
+    if 'geometry' in data:
+        xs, ys = data['geometry'].xy
+        road_lines.append(list(zip(xs, ys, [0]*len(xs))))
+    else:
+        road_lines.append([(G.nodes[u]['x'], G.nodes[u]['y'], 0), (G.nodes[v]['x'], G.nodes[v]['y'], 0)])
 
-# --- NEW: Add Grid Background ---
-ax.grid(True, which='both', color='#1a1a1a', linestyle='-', linewidth=0.5, alpha=0.3)
-ax.set_axisbelow(True)
+road_coll = Line3DCollection(road_lines, colors='#2a2a2a', linewidths=0.8, alpha=0.5)
+ax.add_collection3d(road_coll)
 
-# --- NEW: Add Scanline Effect ---
-for i in range(0, 100, 2):
-    ax.axhline(y=ax.get_ylim()[0] + (ax.get_ylim()[1] - ax.get_ylim()[0]) * i / 100, 
-               color='white', alpha=0.03, linewidth=0.5, zorder=10)
-
-# HUD Elements (Cyberpunk Text)
+# HUD Elements (Cyberpunk Text) - Using 2D text on 3D axis
 hud_font = {'family': 'monospace', 'weight': 'bold', 'size': 14}
-stats_text = ax.text(0.05, 0.95, "SYSTEM: ONLINE", transform=ax.transAxes, 
-                    color='#00ff00', alpha=0.8, ha='left', va='top', **hud_font)
-scan_text = ax.text(0.05, 0.92, "SCANNED: 0", transform=ax.transAxes, 
-                   color=SEARCH_COLOR, alpha=0.8, ha='left', va='top', **hud_font)
-loc_text = ax.text(0.95, 0.02, "LOC: KATHMANDU", transform=ax.transAxes, 
-                  color='white', alpha=0.5, ha='right', va='bottom', fontsize=10)
+stats_text = fig.text(0.05, 0.95, "SYSTEM: ONLINE", color='#00ff00', alpha=0.8, ha='left', va='top', **hud_font)
+scan_text = fig.text(0.05, 0.92, "SCANNED: 0", color=SEARCH_COLOR, alpha=0.8, ha='left', va='top', **hud_font)
+loc_text = fig.text(0.95, 0.02, "LOC: KATHMANDU", color='white', alpha=0.5, ha='right', va='bottom', fontsize=10)
 
-# Create LineCollection for search visualization
-search_lc = LineCollection([], colors=SEARCH_COLOR, linewidths=1.5, alpha=0.8, zorder=4)
-ax.add_collection(search_lc)
+# Create Line3DCollection for search visualization
+search_lc = Line3DCollection([], colors=SEARCH_COLOR, linewidths=1.5, alpha=0.8)
+ax.add_collection3d(search_lc)
 
-# Create multiple path lines for the glow effect
-path_glow_outer, = ax.plot([], [], color=PATH_COLOR, linewidth=8, alpha=0.2, zorder=4)
-path_glow_inner, = ax.plot([], [], color=PATH_COLOR, linewidth=5, alpha=0.4, zorder=4)
-path_line, = ax.plot([], [], color=PATH_COLOR, linewidth=2.5, alpha=1, zorder=5)
+# Create path lines for the glow effect
+path_glow_outer = Line3DCollection([], colors=PATH_COLOR, linewidths=8, alpha=0.2)
+path_glow_inner = Line3DCollection([], colors=PATH_COLOR, linewidths=5, alpha=0.4)
+path_line = Line3DCollection([], colors=PATH_COLOR, linewidths=2.5, alpha=1)
 
-# Add start and end markers
-start_coords = (G.nodes[start_node]['x'], G.nodes[start_node]['y'])
-end_coords = (G.nodes[end_node]['x'], G.nodes[end_node]['y'])
+ax.add_collection3d(path_glow_outer)
+ax.add_collection3d(path_glow_inner)
+ax.add_collection3d(path_line)
 
-ax.scatter(*start_coords, color='#00ff00', s=150, marker='o', 
-          edgecolors='#00ff00', linewidths=2, zorder=10, label='Start')
-ax.scatter(*end_coords, color='#ff0000', s=150, marker='o', 
-          edgecolors='#ff0000', linewidths=2, zorder=10, label='End')
-
-ax.legend(loc='upper right', fancybox=True, shadow=True)
-fig.suptitle('Dijkstra Search & Path Visualization', fontsize=14, color='white', 
-             fontweight='bold', y=0.98)
+# Set limits based on bbox
+ax.set_xlim(west, east)
+ax.set_ylim(south, north)
+ax.set_zlim(0, 0.02)
 
 # 5. Animation Function
 # --- TIMING CONFIGURATION ---
@@ -173,7 +198,6 @@ PHASE_1_FRAMES = TOTAL_FRAMES - PHASE_2_FRAMES # Remaining frames for search
 def update(frame):
     # Phase 1: Growing the Blue Web
     if frame < PHASE_1_FRAMES:
-        # Calculate how many edges to show based on progress
         progress = (frame + 1) / PHASE_1_FRAMES
         idx = int(progress * len(explored_edges))
         search_lc.set_segments(explored_edges[:idx])
@@ -183,14 +207,16 @@ def update(frame):
         stats_text.set_color(SEARCH_COLOR)
         scan_text.set_text(f"SCANNED: {idx}")
         
-        path_glow_outer.set_data([], [])
-        path_glow_inner.set_data([], [])
-        path_line.set_data([], [])
+        path_glow_outer.set_segments([])
+        path_glow_inner.set_segments([])
+        path_line.set_segments([])
         
-        # Play search sound every few frames (pinball bumper sound)
+        # Play search sound every few frames
         if sound_enabled and frame % 5 == 0 and search_sounds:
             sound = search_sounds[frame % len(search_sounds)]
             sound.play()
+            
+    # Phase 2: Highlighting the Green Route
     else:
         search_lc.set_segments(explored_edges)
         
@@ -199,20 +225,17 @@ def update(frame):
         stats_text.set_color(PATH_COLOR)
         scan_text.set_text(f"SCANNED: {len(explored_edges)}")
         
-        # Calculate fade-in effect
         fade_progress = (frame - PHASE_1_FRAMES) / (PHASE_2_FRAMES * 0.8)
         fade_progress = min(fade_progress, 1.0)
         
-        # Play path found sound on first frame of phase 2
         if frame == PHASE_1_FRAMES and sound_enabled and path_found_sound:
             path_found_sound.play()
         
-        path_x = [c[0] for c in route_coords]
-        path_y = [c[1] for c in route_coords]
-        
-        path_glow_outer.set_data(path_x, path_y)
-        path_glow_inner.set_data(path_x, path_y)
-        path_line.set_data(path_x, path_y)
+        # Animate the path
+        path_segments = [route_coords_3d]
+        path_glow_outer.set_segments(path_segments)
+        path_glow_inner.set_segments(path_segments)
+        path_line.set_segments(path_segments)
         
         path_glow_outer.set_alpha(0.2 * fade_progress)
         path_glow_inner.set_alpha(0.4 * fade_progress)
@@ -220,7 +243,7 @@ def update(frame):
         
     return search_lc, path_glow_outer, path_glow_inner, path_line, stats_text, scan_text
 
-ani = FuncAnimation(fig, update, frames=TOTAL_FRAMES, interval=1000/FPS, blit=True)
+ani = FuncAnimation(fig, update, frames=TOTAL_FRAMES, interval=1000/FPS, blit=False)
 
 print(f"    ✓ Animation ready: {TOTAL_FRAMES} frames")
 
@@ -236,3 +259,4 @@ except Exception as e:
     print(f"    → Make sure FFmpeg is installed: `apt install ffmpeg` (Linux) or `brew install ffmpeg` (Mac)")
 
 print("\n" + "=" * 60)
+
