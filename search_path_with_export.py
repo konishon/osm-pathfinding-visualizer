@@ -21,6 +21,13 @@ PATH_COLOR = '#adff2f'            # Neon Green
 BG_COLOR = '#0b0b0b'              # Near black
 OUTPUT_FILE = 'search_path_animation.mp4'
 
+# --- TIMING CONFIGURATION ---
+TARGET_DURATION = 10  # Total video duration in seconds
+FPS = 30              # Frames per second
+TOTAL_FRAMES = TARGET_DURATION * FPS
+PHASE_2_FRAMES = 60   # 2 seconds for path highlight/fade-in
+PHASE_1_FRAMES = TOTAL_FRAMES - PHASE_2_FRAMES # Remaining frames for search
+
 print("=" * 60)
 print("Search & Path Visualization - 3D WITH VIDEO EXPORT")
 print("=" * 60)
@@ -29,7 +36,8 @@ print("=" * 60)
 print("\n[0/4] Initializing sound system...")
 sound_enabled = init_sound_system()
 if sound_enabled:
-    search_sounds = create_search_sounds()
+    num_beeps = int(PHASE_1_FRAMES / 5) + 2
+    search_sounds = create_search_sounds(num_steps=num_beeps)
     path_found_sound = create_path_found_sound()
     print("    ✓ Sound effects loaded")
 else:
@@ -188,17 +196,13 @@ ax.set_ylim(south, north)
 ax.set_zlim(0, 0.02)
 
 # 5. Animation Function
-# --- TIMING CONFIGURATION ---
-TARGET_DURATION = 10  # Total video duration in seconds
-FPS = 30              # Frames per second
-TOTAL_FRAMES = TARGET_DURATION * FPS
-PHASE_2_FRAMES = 60   # 2 seconds for path highlight/fade-in
-PHASE_1_FRAMES = TOTAL_FRAMES - PHASE_2_FRAMES # Remaining frames for search
-
 def update(frame):
     # Phase 1: Growing the Blue Web
     if frame < PHASE_1_FRAMES:
-        progress = (frame + 1) / PHASE_1_FRAMES
+        # Calculate progress with "Fast In, Slow Out" interpolation (Cubic Ease Out)
+        t = (frame + 1) / PHASE_1_FRAMES
+        progress = 1 - (1 - t) ** 3
+        
         idx = int(progress * len(explored_edges))
         search_lc.set_segments(explored_edges[:idx])
         
@@ -213,7 +217,8 @@ def update(frame):
         
         # Play search sound every few frames
         if sound_enabled and frame % 5 == 0 and search_sounds:
-            sound = search_sounds[frame % len(search_sounds)]
+            sound_idx = min(int(progress * len(search_sounds)), len(search_sounds) - 1)
+            sound = search_sounds[sound_idx]
             sound.play()
             
     # Phase 2: Highlighting the Green Route

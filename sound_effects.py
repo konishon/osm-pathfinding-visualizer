@@ -7,25 +7,17 @@ import numpy as np
 import pygame
 from io import BytesIO
 
+def get_beep_waveform(frequency: float, duration: float, sample_rate: int = 22050) -> np.ndarray:
+    """Generate raw waveform for a beep."""
+    t = np.linspace(0, duration, int(sample_rate * duration))
+    wave = np.sin(2 * np.pi * frequency * t) * 0.3  # Reduce volume
+    return (wave * 32767).astype(np.int16)
 
 def generate_beep_sound(frequency: float, duration: float, sample_rate: int = 22050) -> pygame.mixer.Sound:
     """
     Generate a beep sound with the given frequency and duration.
-    
-    Args:
-        frequency: Frequency in Hz
-        duration: Duration in seconds
-        sample_rate: Sample rate in Hz (default 22050)
-    
-    Returns:
-        pygame.mixer.Sound object
     """
-    # Generate the waveform
-    t = np.linspace(0, duration, int(sample_rate * duration))
-    wave = np.sin(2 * np.pi * frequency * t) * 0.3  # Reduce volume
-    
-    # Convert to 16-bit audio
-    audio_data = (wave * 32767).astype(np.int16)
+    audio_data = get_beep_waveform(frequency, duration, sample_rate)
     
     # Create stereo (2 channels)
     stereo_data = np.zeros((len(audio_data), 2), dtype=np.int16)
@@ -37,12 +29,15 @@ def generate_beep_sound(frequency: float, duration: float, sample_rate: int = 22
     return sound
 
 
-def create_search_sounds():
+def create_search_sounds(num_steps: int = 4, start_freq: float = 200, end_freq: float = 1200):
     """Create a library of sounds for the search phase (growing blue web)."""
     sounds = []
     
-    # Pinball bumper sounds - ascending pitch
-    frequencies = [400, 500, 600, 700]  # Hz
+    # Ascending pitch
+    if num_steps <= 1:
+        frequencies = [start_freq]
+    else:
+        frequencies = np.linspace(start_freq, end_freq, num_steps)
     
     for freq in frequencies:
         sound = generate_beep_sound(freq, 0.1)  # 100ms beeps
@@ -50,14 +45,20 @@ def create_search_sounds():
     
     return sounds
 
+def get_search_waveforms(num_steps: int = 4, start_freq: float = 200, end_freq: float = 1200):
+    """Return raw waveforms for search sounds."""
+    waveforms = []
+    if num_steps <= 1:
+        frequencies = [start_freq]
+    else:
+        frequencies = np.linspace(start_freq, end_freq, num_steps)
+        
+    for freq in frequencies:
+        waveforms.append(get_beep_waveform(freq, 0.1))
+    return waveforms
 
-def create_path_found_sound():
-    """Create a triumphant sound for when the path is found."""
-    pygame.mixer.init()
-    
-    # Create a rising tone followed by a happy ding
-    sample_rate = 22050
-    
+def get_path_found_waveform(sample_rate: int = 22050) -> np.ndarray:
+    """Generate raw waveform for path found sound."""
     # Part 1: Rising tone (sweeping frequency)
     t1 = np.linspace(0, 0.3, int(sample_rate * 0.3))
     freq1 = np.linspace(600, 1200, len(t1))
@@ -74,7 +75,13 @@ def create_path_found_sound():
     combined = np.concatenate([wave1, wave2])
     
     # Convert to 16-bit audio
-    audio_data = (combined * 32767).astype(np.int16)
+    return (combined * 32767).astype(np.int16)
+
+def create_path_found_sound():
+    """Create a triumphant sound for when the path is found."""
+    pygame.mixer.init()
+    
+    audio_data = get_path_found_waveform()
     
     # Create stereo
     stereo_data = np.zeros((len(audio_data), 2), dtype=np.int16)
