@@ -18,7 +18,7 @@ from .sound_effects import (
     init_sound_system, create_search_sounds, create_path_found_sound, 
     get_search_waveforms, get_path_found_waveform
 )
-from .algorithms import ALGORITHMS
+from .algorithms import ALGORITHMS, heuristic
 from .config import Config
 
 class PathVisualizer:
@@ -174,48 +174,107 @@ class PathVisualizer:
         for key in self.features:
              self.features[key] = self.features[key].to_crs(crs)
 
+    def _reconstruct_path_from_parents(self, parent: dict, start_node, end_node) -> list:
+        """Walk the parent dict backwards from end_node to start_node."""
+        if end_node not in parent:
+            return []
+        path = []
+        node = end_node
+        seen = set()
+        while node is not None:
+            if node in seen:
+                # Cycle detected in parent pointers; treat as no valid path.
+                return []
+            seen.add(node)
+            path.append(node)
+            # Use .get() to avoid KeyError if an intermediate parent is missing.
+            node = parent.get(node)
+        if not path or path[-1] != start_node:
+            return []
+        path.reverse()
+        return path
+
     def run_search(self):
         """Run Search and Shortest Path algorithms."""
         print(f"\n[2/5] Calculating search expansion ({self.config.algorithm.upper()})...")
-        
+
         start_node = ox.distance.nearest_nodes(self.G, self.start_x, self.start_y)
         end_node = ox.distance.nearest_nodes(self.G, self.end_x, self.end_y)
-        
+
+        # Track parent pointers during exploration only for Greedy BFS so it can
+        # reconstruct the actual (non-optimal) path it traversed.
+        parent: Optional[dict] = {start_node: None} if self.config.algorithm == 'greedy' else None
+
         search_func = ALGORITHMS.get(self.config.algorithm, ALGORITHMS['bfs'])
         iterator = search_func(self.G, start_node, end_node)
 
         for u, v in iterator:
+            if parent is not None:
+                parent[v] = u  # last writer wins – correct for A*/Dijkstra re-relaxation
+
             data = self.G.get_edge_data(u, v)[0]
             coords = list(data['geometry'].coords) if 'geometry' in data else [
-                (self.G.nodes[u]['x'], self.G.nodes[u]['y']), 
+                (self.G.nodes[u]['x'], self.G.nodes[u]['y']),
                 (self.G.nodes[v]['x'], self.G.nodes[v]['y'])
             ]
-            
+
             if len(coords) >= 2:
                 z = -100 if self.config.dimension == '3d' else 0
-                coords_3d = np.array([(c[0], c[1], z) for c in coords]) if self.config.dimension == '3d' else np.array([(c[0], c[1]) for c in coords])
+                coords_3d = (
+                    np.array([(c[0], c[1], z) for c in coords])
+                    if self.config.dimension == '3d'
+                    else np.array([(c[0], c[1]) for c in coords])
+                )
                 self.explored_edges.append(coords_3d)
-            
+
             if v == end_node:
                 break
-        
+
         print(f"    ✓ Explored {len(self.explored_edges)} edges")
 
-        print("\n[3/5] Computing shortest path...")
+        print("\n[3/5] Computing path (algorithm-specific)...")
         try:
-            route = nx.shortest_path(self.G, start_node, end_node, weight='length')
+            algo = self.config.algorithm
+
+            if algo == 'bfs':
+                # BFS shortest path = fewest hops (unweighted)
+                route = nx.shortest_path(self.G, start_node, end_node, weight=None)
+            elif algo == 'dijkstra':
+                # Dijkstra = shortest by road length
+                route = nx.shortest_path(self.G, start_node, end_node, weight='length')
+            elif algo == 'astar':
+                # A* with the same Euclidean heuristic used during exploration
+                route = nx.astar_path(
+                    self.G, start_node, end_node,
+                    heuristic=lambda u, v: heuristic(self.G, u, v),
+                    weight='length'
+                )
+            elif algo == 'greedy':
+                # Greedy BFS finds a non-optimal path; reconstruct what it actually traversed
+                route = self._reconstruct_path_from_parents(parent, start_node, end_node)
+                if not route:
+                    raise nx.NetworkXNoPath(f"Greedy path reconstruction failed")
+            else:
+                route = nx.shortest_path(self.G, start_node, end_node, weight='length')
+
             route_coords = []
             for u, v in zip(route[:-1], route[1:]):
                 data = self.G.get_edge_data(u, v)[0]
                 if 'geometry' in data:
                     route_coords.extend(list(data['geometry'].coords))
                 else:
-                    route_coords.extend([(self.G.nodes[u]['x'], self.G.nodes[u]['y']), 
-                                       (self.G.nodes[v]['x'], self.G.nodes[v]['y'])])
-            
+                    route_coords.extend([
+                        (self.G.nodes[u]['x'], self.G.nodes[u]['y']),
+                        (self.G.nodes[v]['x'], self.G.nodes[v]['y'])
+                    ])
+
             if len(route_coords) >= 2:
                 z = -200 if self.config.dimension == '3d' else 0
-                self.route_coords_3d = np.array([(c[0], c[1], z) for c in route_coords]) if self.config.dimension == '3d' else np.array([(c[0], c[1]) for c in route_coords])
+                self.route_coords_3d = (
+                    np.array([(c[0], c[1], z) for c in route_coords])
+                    if self.config.dimension == '3d'
+                    else np.array([(c[0], c[1]) for c in route_coords])
+                )
             else:
                 self.route_coords_3d = np.empty((0, 3 if self.config.dimension == '3d' else 2))
         except nx.NetworkXNoPath:
@@ -517,9 +576,35 @@ def main():
     parser.add_argument('--algo', choices=['bfs', 'astar', 'dijkstra', 'greedy'], default='bfs', help="Search algorithm")
     parser.add_argument('--duration', type=int, default=10, help="Animation duration in seconds")
     parser.add_argument('--fps', type=int, default=30, help="Frames per second")
+    parser.add_argument('--start', type=str, default=None, metavar='LAT,LON',
+                        help='Start coordinate as "lat,lon", e.g. "28.19,84.01". '
+                             'Use --start=LAT,LON for negative values.')
+    parser.add_argument('--end', type=str, default=None, metavar='LAT,LON',
+                        help='End coordinate as "lat,lon", e.g. "28.20,83.95". '
+                             'Use --end=LAT,LON for negative values.')
     args = parser.parse_args()
 
-    config = Config(dimension=args.dim, algorithm=args.algo, duration=args.duration, fps=args.fps)
+    config_kwargs: dict = dict(dimension=args.dim, algorithm=args.algo, duration=args.duration, fps=args.fps)
+    if args.start:
+        try:
+            lat, lon = map(float, args.start.split(','))
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                parser.error('--start latitude/longitude must be within valid ranges: '
+                             'latitude in [-90, 90], longitude in [-180, 180]')
+            config_kwargs['start_coord'] = (lat, lon)
+        except ValueError:
+            parser.error('--start must be in "lat,lon" format, e.g. "28.19,84.01"')
+    if args.end:
+        try:
+            lat, lon = map(float, args.end.split(','))
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                parser.error('--end latitude/longitude must be within valid ranges: '
+                             'latitude in [-90, 90], longitude in [-180, 180]')
+            config_kwargs['end_coord'] = (lat, lon)
+        except ValueError:
+            parser.error('--end must be in "lat,lon" format, e.g. "28.20,83.95"')
+
+    config = Config(**config_kwargs)
     viz = PathVisualizer(config)
     viz.run(mode=args.mode, output_file=args.output)
 
